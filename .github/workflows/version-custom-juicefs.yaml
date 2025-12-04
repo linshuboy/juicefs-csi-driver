@@ -1,0 +1,90 @@
+name: version-custom-juicefs
+
+on:
+  workflow_dispatch:
+    inputs:
+      ce_juicefs_build_version:
+        description: 'ce juicefs version for image build'
+        required: false
+        type: string
+      ee_juicefs_latest_tag:
+        description: 'ee juicefs latest tag (without ee-) of mount image in csi image'
+        required: false
+        type: string
+      csi_build_version:
+        description: 'csi version for image build'
+        required: false
+        type: string
+      juicefs_repo_url:
+        description: 'Optional custom juicefs repo url for CSI build'
+        required: false
+        type: string
+
+jobs:
+  publish-version-custom:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set custom JuiceFS repo
+      if: ${{ github.event.inputs.juicefs_repo_url != '' }}
+      run: echo "JUICEFS_REPO_URL=${{ github.event.inputs.juicefs_repo_url }}" >> $GITHUB_ENV
+    - name: Login Docker Hub
+      run: docker login --username linshuboy --password ${PASSWORD}
+      env:
+        PASSWORD: ${{ secrets.DOCKERHUB_FUSE_ACCESS_TOKEN }}
+    - name: Confirm juicefs version
+      env:
+        JUICEFS_BUILD_VERSION: ${{ inputs.ce_juicefs_build_version }}
+        EE_JUICEFS_LATEST_VERSION: ${{ inputs.ee_juicefs_latest_tag }}
+        CSI_BUILD_VERSION: ${{ inputs.csi_build_version }}
+      run: |
+        if [ ${{ env.JUICEFS_BUILD_VERSION }} ]; then
+          echo "JUICEFS_CE_LATEST_VERSION=${{ env.JUICEFS_BUILD_VERSION }}" >> $GITHUB_ENV
+        else
+          JUICEFS_CE_LATEST_VERSION=$(curl -fsSL https://api.github.com/repos/juicedata/juicefs/releases/latest | grep tag_name | grep -oE 'v[0-9]+\.[0-9][0-9]*(\.[0-9]+(-[0-9a-z]+)?)?')
+          echo "JUICEFS_CE_LATEST_VERSION=$JUICEFS_CE_LATEST_VERSION" >> $GITHUB_ENV
+        fi
+        
+        if [ ${{ env.EE_JUICEFS_LATEST_VERSION }} ]; then
+          echo "JUICEFS_EE_LATEST_VERSION=${{ env.EE_JUICEFS_LATEST_VERSION }}" >> $GITHUB_ENV
+        else
+          curl -sSL https://static.juicefs.com/release/bin_pkgs/latest_stable_full.tar.gz | tar -xz
+          version=$(grep -oP 'mount_version=\K.*' version.ini)
+          hash=$(./Linux/mount version | awk -F '[()]' '{print $2}' | awk '{print $NF}')
+          JUICEFS_EE_LATEST_VERSION=$version-$hash
+          echo "JUICEFS_EE_LATEST_VERSION=$JUICEFS_EE_LATEST_VERSION" >> $GITHUB_ENV
+        fi
+        
+        if [ ${{ env.CSI_BUILD_VERSION }} ]; then
+          echo "CSI_LATEST_VERSION=${{ env.CSI_BUILD_VERSION }}" >> $GITHUB_ENV
+        else
+          CSI_LATEST_VERSION=$(git describe --tags --match 'v*' | grep -oE 'v[0-9]+\.[0-9][0-9]*(\.[0-9]+)?')
+          echo "CSI_LATEST_VERSION=$CSI_LATEST_VERSION" >> $GITHUB_ENV
+        fi
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Build docker images and push (custom repo optional)
+      env:
+        CEVERSION: ce-${{ env.JUICEFS_CE_LATEST_VERSION }}
+        CEJUICEFS_VERSION: ${{ env.JUICEFS_CE_LATEST_VERSION }}
+        EEVERSION: ee-${{ env.JUICEFS_EE_LATEST_VERSION }}
+        CSIVERSION: ${{ env.CSI_LATEST_VERSION }}
+      run: |
+        extra_arg=""
+        if [ -n "${JUICEFS_REPO_URL}" ]; then
+          extra_arg="--build-arg JUICEFS_REPO_URL=${JUICEFS_REPO_URL}"
+        fi
+        cd docker
+        docker buildx build -t juicedata/juicefs-csi-driver:${CSIVERSION} \
+          --build-arg JUICEFS_REPO_REF=${CEJUICEFS_VERSION} \
+          --build-arg JUICEFS_CE_MOUNT_IMAGE=juicedata/mount:${CEVERSION} \
+          --build-arg JUICEFS_EE_MOUNT_IMAGE=juicedata/mount:${EEVERSION} \
+          --build-context project=.. \
+          --platform linux/amd64,linux/arm64 \
+          ${extra_arg} -f csi.Dockerfile . --push
+    - name: Setup upterm session
+      if: ${{ failure() }}
+      timeout-minutes: 60
+      uses: lhotari/action-upterm@v1
