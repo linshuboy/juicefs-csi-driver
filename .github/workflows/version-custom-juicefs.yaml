@@ -74,7 +74,8 @@ jobs:
       run: |
         cd docker
         args=(
-          buildx build
+          buildx
+          build
           --push
           -t juicedata/juicefs-csi-driver:${CSIVERSION}
           --build-arg JUICEFS_REPO_REF=${CEJUICEFS_VERSION}
