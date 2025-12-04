@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       ce_juicefs_build_version:
-        description: 'ce juicefs version for image build'
+        description: 'ce juicefs version for image build (e.g. v1.3.0)'
         required: false
         type: string
       ee_juicefs_latest_tag:
-        description: 'ee juicefs latest tag (without ee-) of mount image in csi image'
+        description: 'ee juicefs latest tag (without ee-) of mount image in csi image (e.g. 5.2.19-ceb973d)'
         required: false
         type: string
       csi_build_version:
@@ -72,18 +72,22 @@ jobs:
         EEVERSION: ee-${{ env.JUICEFS_EE_LATEST_VERSION }}
         CSIVERSION: ${{ env.CSI_LATEST_VERSION }}
       run: |
-        extra_arg=""
-        if [ -n "${JUICEFS_REPO_URL}" ]; then
-          extra_arg="--build-arg JUICEFS_REPO_URL=${JUICEFS_REPO_URL}"
-        fi
         cd docker
-        docker buildx build -t juicedata/juicefs-csi-driver:${CSIVERSION} \
-          --build-arg JUICEFS_REPO_REF=${CEJUICEFS_VERSION} \
-          --build-arg JUICEFS_CE_MOUNT_IMAGE=juicedata/mount:${CEVERSION} \
-          --build-arg JUICEFS_EE_MOUNT_IMAGE=juicedata/mount:${EEVERSION} \
-          --build-context project=.. \
-          --platform linux/amd64,linux/arm64 \
-          ${extra_arg} -f csi.Dockerfile . --push
+        args=(
+          buildx build
+          --push
+          -t juicedata/juicefs-csi-driver:${CSIVERSION}
+          --build-arg JUICEFS_REPO_REF=${CEJUICEFS_VERSION}
+          --build-arg JUICEFS_CE_MOUNT_IMAGE=juicedata/mount:${CEVERSION}
+          --build-arg JUICEFS_EE_MOUNT_IMAGE=juicedata/mount:${EEVERSION}
+          --build-context project=..
+          --platform linux/amd64,linux/arm64
+        )
+        if [ -n "${JUICEFS_REPO_URL}" ]; then
+          args+=(--build-arg JUICEFS_REPO_URL=${JUICEFS_REPO_URL})
+        fi
+        args+=( -f csi.Dockerfile . )
+        docker "${args[@]}"
     - name: Setup upterm session
       if: ${{ failure() }}
       timeout-minutes: 60
